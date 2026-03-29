@@ -14,6 +14,12 @@ import java.util.Map;
  */
 public class NaturalLanguageIntentParser {
 
+    private static final SemanticIntentMapper SEMANTIC_MAPPER =
+        new SemanticIntentMapper();
+
+    private static final double KEYWORD_WEIGHT = 0.45;
+    private static final double SEMANTIC_WEIGHT = 0.55;
+
     // Keywords that indicate cost priority
     private static final Map<String, Double> COST_KEYWORDS = new HashMap<>();
 
@@ -91,10 +97,17 @@ public class NaturalLanguageIntentParser {
 
         String lowerInput = input.toLowerCase().trim();
 
-        double costScore = calculateScore(lowerInput, COST_KEYWORDS);
-        double latencyScore = calculateScore(lowerInput, LATENCY_KEYWORDS);
-        double securityScore = calculateScore(lowerInput, SECURITY_KEYWORDS);
-        double carbonScore = calculateScore(lowerInput, CARBON_KEYWORDS);
+    double keywordCostScore = calculateScore(lowerInput, COST_KEYWORDS);
+    double keywordLatencyScore = calculateScore(lowerInput, LATENCY_KEYWORDS);
+    double keywordSecurityScore = calculateScore(lowerInput, SECURITY_KEYWORDS);
+    double keywordCarbonScore = calculateScore(lowerInput, CARBON_KEYWORDS);
+
+    Map<String, Double> semanticScores = SEMANTIC_MAPPER.extractScores(lowerInput);
+
+    double costScore = combine(keywordCostScore, semanticScores.getOrDefault("cost", 0.0));
+    double latencyScore = combine(keywordLatencyScore, semanticScores.getOrDefault("latency", 0.0));
+    double securityScore = combine(keywordSecurityScore, semanticScores.getOrDefault("security", 0.0));
+    double carbonScore = combine(keywordCarbonScore, semanticScores.getOrDefault("carbon", 0.0));
 
         // If no keywords matched, use moderate defaults
         if (costScore == 0 && latencyScore == 0 &&
@@ -109,6 +122,11 @@ public class NaturalLanguageIntentParser {
                                     securityScore, carbonScore);
 
         System.out.println("[IntentParser] Input: \"" + input + "\"");
+        System.out.printf("[IntentParser] Semantic: cost=%.2f, latency=%.2f, security=%.2f, carbon=%.2f%n",
+            semanticScores.getOrDefault("cost", 0.0),
+            semanticScores.getOrDefault("latency", 0.0),
+            semanticScores.getOrDefault("security", 0.0),
+            semanticScores.getOrDefault("carbon", 0.0));
         System.out.println("[IntentParser] Parsed: " + intent);
 
         return intent;
@@ -135,6 +153,18 @@ public class NaturalLanguageIntentParser {
         }
 
         return maxScore;
+    }
+
+    private static double combine(double keywordScore, double semanticScore) {
+        double weighted = (KEYWORD_WEIGHT * keywordScore) +
+                          (SEMANTIC_WEIGHT * semanticScore);
+
+        double strongSignal = Math.max(keywordScore, semanticScore);
+        if (strongSignal >= 0.75) {
+            weighted = Math.max(weighted, strongSignal * 0.90);
+        }
+
+        return Math.max(0.0, Math.min(1.0, weighted));
     }
 
     /**

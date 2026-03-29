@@ -21,10 +21,12 @@ import org.intentcloudsim.intent.*;
 import org.intentcloudsim.sla.*;
 import org.intentcloudsim.tradeoff.*;
 import org.intentcloudsim.placement.*;
+import org.intentcloudsim.rl.ReinforcementIntentRefiner;
 import org.intentcloudsim.util.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Scanner;
 
 /**
  * MAIN SIMULATION: Intent-Driven Autonomous Cloud Virtualization
@@ -60,18 +62,6 @@ public class MainSimulation {
     private static final long CLOUDLET_LENGTH = 50000;
     private static final int CLOUDLET_PES = 1;
 
-    // Test scenarios with different user intents
-    private static final String[] TEST_INTENTS = {
-        "I want cheap and budget-friendly servers for my startup",
-        "I need fast real-time low latency processing for gaming",
-        "Deploy secure encrypted compliant infrastructure for banking",
-        "I want a balanced solution that is cost-effective and responsive",
-        "Run my workload on green sustainable carbon neutral infrastructure",
-        "I need high performance secure servers at affordable cost",
-        "Give me the fastest possible execution, money is no object",
-        "Minimize cost as much as possible, latency doesn't matter"
-    };
-
     public static void main(String[] args) {
         System.out.println("╔══════════════════════════════════════════════════╗");
         System.out.println("║  Intent-Driven Autonomous Cloud Virtualization  ║");
@@ -81,61 +71,78 @@ public class MainSimulation {
         // Initialize components
         MetricsLogger logger = new MetricsLogger("results");
         IntentHistoryLearner learner = new IntentHistoryLearner();
+        ReinforcementIntentRefiner rlRefiner = new ReinforcementIntentRefiner();
         SLANegotiationAgent slaAgent = new SLANegotiationAgent();
         CostPerformanceTradeoffEngine tradeoffEngine =
             new CostPerformanceTradeoffEngine();
         IntentAwareVmPlacementPolicy placementPolicy =
             new IntentAwareVmPlacementPolicy();
 
-        // Run simulation for each test intent
-        for (int i = 0; i < TEST_INTENTS.length; i++) {
+        List<Double> rewardHistory = new ArrayList<>();
+        List<String> inputIntents = loadInputIntents(args);
+
+        if (inputIntents.isEmpty()) {
+            System.out.println("[MainSimulation] No intent input provided. Exiting.");
+            return;
+        }
+
+        // Run simulation for each provided intent
+        for (int i = 0; i < inputIntents.size(); i++) {
             System.out.println("\n" + "=".repeat(60));
             System.out.println("EXPERIMENT " + (i + 1) + " / " +
-                               TEST_INTENTS.length);
+                               inputIntents.size());
             System.out.println("=".repeat(60));
 
-            String userInput = TEST_INTENTS[i];
-
-            // ===== STEP 1: Parse Intent (Patent Idea 16) =====
-            System.out.println("\n--- STEP 1: Parse Intent ---");
-            Intent intent = NaturalLanguageIntentParser.parse(userInput);
-
-            // ===== STEP 2: Learn from History (Patent Idea 19) =====
-            System.out.println("\n--- STEP 2: Learn Intent ---");
+            String userInput = inputIntents.get(i);
             String userId = "user_" + (i % 3); // simulate 3 users
-            learner.learn(userId, intent);
+            double systemLoad = deriveSystemLoad(i);
+
+            // ===== STEP 1: Parse Intent (Semantic + keyword hybrid) =====
+            System.out.println("\n--- STEP 1: Parse Intent ---");
+            Intent parsedIntent = NaturalLanguageIntentParser.parse(userInput);
+
+            // ===== STEP 2: Learn + RL refine intent =====
+            System.out.println("\n--- STEP 2: Learn Intent + RL Refinement ---");
             Intent predicted = learner.predict(userId);
             System.out.println("Predicted intent: " + predicted);
+            Intent refinedIntent = rlRefiner.refineIntent(
+                parsedIntent, systemLoad, predicted, userId);
+            learner.learn(userId, parsedIntent);
+            System.out.println("Refined intent: " + refinedIntent);
 
             // ===== STEP 3: Negotiate SLA (Patent Idea 17) =====
             System.out.println("\n--- STEP 3: Negotiate SLA ---");
-            SLAContract sla = slaAgent.negotiate(intent);
+            SLAContract sla = slaAgent.negotiate(refinedIntent);
 
             // ===== STEP 4: Evaluate Tradeoffs (Patent Idea 18) =====
             System.out.println("\n--- STEP 4: Evaluate Tradeoffs ---");
             double[] candidateCosts = {2.0, 5.0, 10.0, 15.0};
             double[] candidateLatencies = {150.0, 80.0, 40.0, 20.0};
             int bestOption = tradeoffEngine.findBestOption(
-                candidateCosts, candidateLatencies, intent);
+                candidateCosts, candidateLatencies, refinedIntent);
             double selectedCost = candidateCosts[bestOption];
             double selectedLatency = candidateLatencies[bestOption];
             double tradeoffScore = tradeoffEngine.score(
-                selectedCost, selectedLatency, intent);
+                selectedCost, selectedLatency, refinedIntent);
 
             // ===== STEP 5: Run CloudSim Plus (Patent Idea 20) =====
             System.out.println("\n--- STEP 5: CloudSim Plus Simulation ---");
-            runCloudSimulation(intent, placementPolicy, i);
+            runCloudSimulation(refinedIntent, placementPolicy, i);
 
             // ===== STEP 6: Log Results =====
             boolean slaSatisfied = sla.isSatisfied(
                 selectedLatency, selectedCost, 99.5);
+            double reward = rlRefiner.updateFromFeedback(
+                userId, slaSatisfied, selectedCost, selectedLatency);
+            rewardHistory.add(reward);
 
             logger.addRecord(
-                userInput, intent.getCostPriority(),
-                intent.getLatencyPriority(), intent.getSecurityPriority(),
+                userInput, refinedIntent.getCostPriority(),
+                refinedIntent.getLatencyPriority(), refinedIntent.getSecurityPriority(),
                 sla.getMaxLatencyMs(), sla.getMaxCostPerHour(),
                 selectedLatency, selectedCost,
-                bestOption, tradeoffScore, slaSatisfied
+                bestOption, tradeoffScore, slaSatisfied,
+                systemLoad, reward, "hybrid-keyword-semantic+rl"
             );
         }
 
@@ -146,7 +153,11 @@ public class MainSimulation {
         // Generate graphs
         System.out.println("\n--- Generating Graphs ---");
         GraphGenerator graphGen = new GraphGenerator("results");
-        graphGen.generateAll();
+        graphGen.generateAll("simulation_results.csv");
+        graphGen.generateRLRewardGraph(
+            buildIterations(rewardHistory.size()),
+            toArray(rewardHistory)
+        );
 
         System.out.println("\n╔══════════════════════════════════════════════════╗");
         System.out.println("║  SIMULATION COMPLETE                             ║");
@@ -254,6 +265,59 @@ public class MainSimulation {
             cloudletList.add(cloudlet);
         }
         return cloudletList;
+    }
+
+    private static double[] buildIterations(int size) {
+        double[] iterations = new double[size];
+        for (int i = 0; i < size; i++) {
+            iterations[i] = i + 1;
+        }
+        return iterations;
+    }
+
+    private static double[] toArray(List<Double> values) {
+        double[] array = new double[values.size()];
+        for (int i = 0; i < values.size(); i++) {
+            array[i] = values.get(i);
+        }
+        return array;
+    }
+
+    private static List<String> loadInputIntents(String[] args) {
+        if (args != null && args.length > 0) {
+            List<String> intents = new ArrayList<>();
+            for (String arg : args) {
+                if (arg != null && !arg.isBlank()) {
+                    intents.add(arg.trim());
+                }
+            }
+            if (!intents.isEmpty()) {
+                System.out.println("[MainSimulation] Loaded " + intents.size() + " intent(s) from command args.");
+                return intents;
+            }
+        }
+
+        // Interactive mode (UI/CLI-friendly, no hardcoded intent corpus)
+        System.out.println("[MainSimulation] Enter intent statements (blank line to finish):");
+        List<String> intents = new ArrayList<>();
+        try (Scanner scanner = new Scanner(System.in)) {
+            while (true) {
+                System.out.print("intent> ");
+                if (!scanner.hasNextLine()) break;
+                String line = scanner.nextLine();
+                if (line == null || line.trim().isEmpty()) break;
+                intents.add(line.trim());
+            }
+        }
+
+        System.out.println("[MainSimulation] Loaded " + intents.size() + " intent(s) from stdin.");
+        return intents;
+    }
+
+    private static double deriveSystemLoad(int experimentIndex) {
+        // Smooth varying load in [0.30, 0.90] without hardcoded profile list.
+        double wave = Math.sin((experimentIndex + 1) * 0.9);
+        return 0.30 + ((wave + 1.0) / 2.0) * 0.60;
     }
 }
 

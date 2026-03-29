@@ -1,8 +1,9 @@
 package org.intentcloudsim.util;
 
+import com.opencsv.CSVWriter;
+
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -19,7 +20,8 @@ public class MetricsLogger {
         "Timestamp", "UserIntent", "CostPriority", "LatencyPriority",
         "SecurityPriority", "SLAMaxLatency", "SLAMaxCost",
         "ActualLatency", "ActualCost", "HostSelected",
-        "TradeoffScore", "SLASatisfied"
+        "TradeoffScore", "SLASatisfied", "SystemLoad", "RLReward",
+        "PipelineMode"
     };
 
     public MetricsLogger(String outputDir) {
@@ -41,6 +43,20 @@ public class MetricsLogger {
                           int hostSelected, double tradeoffScore,
                           boolean slaSatisfied) {
 
+        addRecord(userIntent, costPriority, latencyPriority, securityPriority,
+            slaMaxLatency, slaMaxCost, actualLatency, actualCost,
+            hostSelected, tradeoffScore, slaSatisfied,
+            0.0, 0.0, "legacy");
+    }
+
+    public void addRecord(String userIntent, double costPriority,
+                          double latencyPriority, double securityPriority,
+                          double slaMaxLatency, double slaMaxCost,
+                          double actualLatency, double actualCost,
+                          int hostSelected, double tradeoffScore,
+                          boolean slaSatisfied, double systemLoad,
+                          double rlReward, String pipelineMode) {
+
         String timestamp = LocalDateTime.now().format(
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
@@ -55,7 +71,10 @@ public class MetricsLogger {
             String.format("%.2f", actualCost),
             String.valueOf(hostSelected),
             String.format("%.2f", tradeoffScore),
-            String.valueOf(slaSatisfied)
+            String.valueOf(slaSatisfied),
+            String.format("%.2f", systemLoad),
+            String.format("%.3f", rlReward),
+            pipelineMode
         });
     }
 
@@ -71,17 +90,16 @@ public class MetricsLogger {
             }
 
             String filepath = outputDir + "/" + filename;
-            PrintWriter writer = new PrintWriter(new FileWriter(filepath));
+            try (CSVWriter writer = new CSVWriter(new FileWriter(filepath))) {
+                // Write headers
+                writer.writeNext(HEADERS);
 
-            // Write headers
-            writer.println(String.join(",", HEADERS));
-
-            // Write data
-            for (String[] record : records) {
-                writer.println(String.join(",", record));
+                // Write data
+                for (String[] record : records) {
+                    writer.writeNext(record);
+                }
             }
 
-            writer.close();
             System.out.println("[MetricsLogger] Saved " + records.size() +
                                " records to " + filepath);
 

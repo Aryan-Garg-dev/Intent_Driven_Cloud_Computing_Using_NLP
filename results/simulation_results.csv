@@ -1,9 +1,0 @@
-Timestamp,UserIntent,CostPriority,LatencyPriority,SecurityPriority,SLAMaxLatency,SLAMaxCost,ActualLatency,ActualCost,HostSelected,TradeoffScore,SLASatisfied
-2026-02-24 12:59:54,I want cheap and budget-friendly servers for my startup,0.95,0.00,0.00,200.00,1.47,150.00,2.00,0,4.75,false
-2026-02-24 12:59:54,I need fast real-time low latency processing for gaming,0.00,1.00,0.00,10.00,20.00,20.00,15.00,3,50.00,false
-2026-02-24 12:59:54,Deploy secure encrypted compliant infrastructure for banking,0.00,0.00,1.00,200.00,20.00,150.00,2.00,0,5.00,false
-2026-02-24 12:59:54,I want a balanced solution that is cost-effective and responsive,0.75,0.80,0.00,57.60,6.18,20.00,15.00,3,40.50,false
-2026-02-24 12:59:54,Run my workload on green sustainable carbon neutral infrastructure,0.00,0.00,0.00,200.00,20.00,150.00,2.00,0,2.00,true
-2026-02-24 12:59:54,I need high performance secure servers at affordable cost,0.80,0.90,0.90,34.80,5.06,20.00,15.00,3,50.03,false
-2026-02-24 12:59:54,Give me the fastest possible execution, money is no object,0.00,0.90,0.00,29.00,20.00,20.00,15.00,3,45.00,true
-2026-02-24 12:59:54,Minimize cost as much as possible, latency doesn't matter,0.90,0.00,0.00,200.00,2.45,150.00,2.00,0,4.50,true

@@ -1,0 +1,4 @@
+"Timestamp","UserIntent","CostPriority","LatencyPriority","SecurityPriority","SLAMaxLatency","SLAMaxCost","ActualLatency","ActualCost","HostSelected","TradeoffScore","SLASatisfied","SystemLoad","RLReward","PipelineMode"
+"2026-04-03 12:58:46","I need fast but cheap servers for gaming","0.87","0.71","0.15","78.79","3.51","20.00","15.00","3","36.95","false","0.83","-2.250","hybrid-keyword-semantic+rl"
+"2026-04-03 12:58:46","Secure encrypted infrastructure for banking and healthcare","0.32","0.10","0.78","181.00","13.78","20.00","15.00","3","9.42","false","0.89","-2.250","hybrid-keyword-semantic+rl"
+"2026-04-03 12:58:46","Green sustainable carbon-neutral cloud computing","0.27","0.10","0.15","181.00","14.74","20.00","15.00","3","7.32","false","0.73","-2.250","hybrid-keyword-semantic+rl"

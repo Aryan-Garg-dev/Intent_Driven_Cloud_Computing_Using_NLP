@@ -46,6 +46,9 @@ Thumbs.db
 ### Log files ###
 *.log
 
+### Runtime generated artifacts ###
+results/rl_learning_history.json
+
 ### Package files ###
 *.jar
 *.war

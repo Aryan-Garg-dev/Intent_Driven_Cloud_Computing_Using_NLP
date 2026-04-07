@@ -43,8 +43,11 @@ public class NaturalLanguageIntentParser {
     // Intensity modifiers for keyword matching
     private static final Map<String, Double> INTENSITY_MODIFIERS = new HashMap<>();
 
-    // Negation patterns
-    private static final List<Pattern> NEGATION_PATTERNS = new ArrayList<>();
+    // Category term hints for scoped negation detection
+    private static final Set<String> COST_TERMS = new HashSet<>();
+    private static final Set<String> LATENCY_TERMS = new HashSet<>();
+    private static final Set<String> SECURITY_TERMS = new HashSet<>();
+    private static final Set<String> CARBON_TERMS = new HashSet<>();
 
     // Initialize all keywords and their weights
     static {
@@ -121,10 +124,18 @@ public class NaturalLanguageIntentParser {
         INTENSITY_MODIFIERS.put("critically", 1.2);
         INTENSITY_MODIFIERS.put("really", 1.05);
 
-        // Negation patterns
-        NEGATION_PATTERNS.add(Pattern.compile("don't.*care.*about|not.*important", Pattern.CASE_INSENSITIVE));
-        NEGATION_PATTERNS.add(Pattern.compile("ignore.*|skip.*|no need.*", Pattern.CASE_INSENSITIVE));
-        NEGATION_PATTERNS.add(Pattern.compile("not.*priority|low.*priority", Pattern.CASE_INSENSITIVE));
+        COST_TERMS.addAll(Arrays.asList(
+            "cost", "price", "budget", "expense", "billing", "money"
+        ));
+        LATENCY_TERMS.addAll(Arrays.asList(
+            "latency", "speed", "performance", "response time", "throughput"
+        ));
+        SECURITY_TERMS.addAll(Arrays.asList(
+            "security", "secure", "encryption", "encrypted", "compliance", "privacy"
+        ));
+        CARBON_TERMS.addAll(Arrays.asList(
+            "carbon", "green", "sustainable", "energy", "renewable"
+        ));
     }
 
     /**
@@ -141,26 +152,30 @@ public class NaturalLanguageIntentParser {
 
         String lowerInput = input.toLowerCase().trim();
 
-    double keywordCostScore = calculateScore(lowerInput, COST_KEYWORDS);
-    double keywordLatencyScore = calculateScore(lowerInput, LATENCY_KEYWORDS);
-    double keywordSecurityScore = calculateScore(lowerInput, SECURITY_KEYWORDS);
-    double keywordCarbonScore = calculateScore(lowerInput, CARBON_KEYWORDS);
+        double keywordCostScore = calculateScore(lowerInput, COST_KEYWORDS);
+        double keywordLatencyScore = calculateScore(lowerInput, LATENCY_KEYWORDS);
+        double keywordSecurityScore = calculateScore(lowerInput, SECURITY_KEYWORDS);
+        double keywordCarbonScore = calculateScore(lowerInput, CARBON_KEYWORDS);
 
-    Map<String, Double> semanticScores = SEMANTIC_MAPPER.extractScores(lowerInput);
+        Map<String, Double> semanticScores = SEMANTIC_MAPPER.extractScores(lowerInput);
 
-    double costScore = combine(keywordCostScore, semanticScores.getOrDefault("cost", 0.0));
-    double latencyScore = combine(keywordLatencyScore, semanticScores.getOrDefault("latency", 0.0));
-    double securityScore = combine(keywordSecurityScore, semanticScores.getOrDefault("security", 0.0));
-    double carbonScore = combine(keywordCarbonScore, semanticScores.getOrDefault("carbon", 0.0));
+        double costScore = combine(keywordCostScore, semanticScores.getOrDefault("cost", 0.0));
+        double latencyScore = combine(keywordLatencyScore, semanticScores.getOrDefault("latency", 0.0));
+        double securityScore = combine(keywordSecurityScore, semanticScores.getOrDefault("security", 0.0));
+        double carbonScore = combine(keywordCarbonScore, semanticScores.getOrDefault("carbon", 0.0));
 
-        // Apply negation detection
-        costScore = applyNegation(lowerInput, costScore);
-        latencyScore = applyNegation(lowerInput, latencyScore);
-        securityScore = applyNegation(lowerInput, securityScore);
-        carbonScore = applyNegation(lowerInput, carbonScore);
+    // Apply category-scoped negation detection (e.g., "latency is not important")
+    costScore = applyNegation(lowerInput, costScore, COST_TERMS);
+    latencyScore = applyNegation(lowerInput, latencyScore, LATENCY_TERMS);
+    securityScore = applyNegation(lowerInput, securityScore, SECURITY_TERMS);
+    carbonScore = applyNegation(lowerInput, carbonScore, CARBON_TERMS);
 
         // Normalize scores
-        normalizeScores(costScore, latencyScore, securityScore, carbonScore);
+        double[] normalized = normalizeScores(costScore, latencyScore, securityScore, carbonScore);
+        costScore = normalized[0];
+        latencyScore = normalized[1];
+        securityScore = normalized[2];
+        carbonScore = normalized[3];
 
         // If no keywords matched, use moderate defaults
         if (costScore == 0 && latencyScore == 0 &&
@@ -255,14 +270,39 @@ public class NaturalLanguageIntentParser {
     /**
      * Apply negation detection to reduce scores if negated.
      */
-    private static double applyNegation(String input, double score) {
-        for (Pattern pattern : NEGATION_PATTERNS) {
-            Matcher matcher = pattern.matcher(input);
-            if (matcher.find()) {
-                return 0.0; // Strong negation reduces to 0
+    private static double applyNegation(String input, double score, Set<String> categoryTerms) {
+        if (!isCategoryNegated(input, categoryTerms)) {
+            return score;
+        }
+        return score * 0.15;
+    }
+
+    private static boolean isCategoryNegated(String input, Set<String> categoryTerms) {
+        for (String term : categoryTerms) {
+            if (containsNegatedTerm(input, term)) {
+                return true;
             }
         }
-        return score;
+        return false;
+    }
+
+    private static boolean containsNegatedTerm(String input, String term) {
+        String escapedTerm = Pattern.quote(term);
+
+        List<Pattern> scopedPatterns = Arrays.asList(
+            Pattern.compile("\\b" + escapedTerm + "\\b\\s+(is\\s+)?(not|isn't|doesn't|does\\s+not)\\s+(important|critical|a\\s+priority|priority|needed|necessary)"),
+            Pattern.compile("\\b" + escapedTerm + "\\b\\s+(doesn't|does\\s+not|isn't|is\\s+not)\\s+matter"),
+            Pattern.compile("\\b(ignore|skip|deprioritize|de-prioritize|downplay)\\s+(the\\s+)?" + escapedTerm + "\\b"),
+            Pattern.compile("\\b" + escapedTerm + "\\b\\s+(is\\s+)?low\\s+priority")
+        );
+
+        for (Pattern pattern : scopedPatterns) {
+            Matcher matcher = pattern.matcher(input);
+            if (matcher.find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

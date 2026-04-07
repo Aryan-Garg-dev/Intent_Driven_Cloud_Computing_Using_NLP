@@ -5,14 +5,14 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
-import javafx.scene.paint.Color;
 
+import org.intentcloudsim.api.IntentPipelineService;
 import org.intentcloudsim.intent.Intent;
 import org.intentcloudsim.intent.NaturalLanguageIntentParser;
-import org.intentcloudsim.sla.SLANegotiationAgent;
 import org.intentcloudsim.sla.SLAContract;
-import org.intentcloudsim.tradeoff.CostPerformanceTradeoffEngine;
 import org.intentcloudsim.ui.models.CloudConfig;
+
+import java.util.Locale;
 
 /**
  * Tab 1: Input natural language intent and receive parsed results with suggestions
@@ -25,11 +25,13 @@ public class IntentInputTab extends VBox {
     private Label dominantLabel;
     private TextArea suggestionsArea;
     private CloudConfig currentConfig;
+    private final IntentPipelineService pipelineService;
 
     public IntentInputTab() {
         setPadding(new Insets(15));
         setSpacing(10);
         currentConfig = new CloudConfig();
+        pipelineService = new IntentPipelineService();
 
         // Split into input/output
         SplitPane splitPane = new SplitPane();
@@ -149,35 +151,106 @@ public class IntentInputTab extends VBox {
             return;
         }
 
+        if (!isIntentDetailedEnough(input)) {
+            String guidance = "Your intent looks too short/incomplete. Please provide a complete requirement, e.g.\n"
+                + "- workload type (web app, gaming, analytics)\n"
+                + "- priority (cost / latency / security / green)\n"
+                + "- constraints (budget, latency target, compliance)";
+            currentConfig.intentValidated = false;
+            currentConfig.intentValidationMessage = guidance;
+            resultArea.setText(guidance);
+            suggestionsArea.setText("No recommendation generated yet. Please provide a more complete intent.");
+            Platform.runLater(() -> {
+                Alert alert = new Alert(Alert.AlertType.WARNING);
+                alert.setTitle("Need More Detail");
+                alert.setHeaderText("Please write a more complete intent");
+                alert.setContentText(guidance);
+                alert.showAndWait();
+            });
+            return;
+        }
+
         Thread thread = new Thread(() -> {
             try {
-                // Parse with confidence
-                NaturalLanguageIntentParser.ParseResult result =
+                String userId = currentConfig.userId != null ? currentConfig.userId : "user_default";
+                double systemLoad = deriveSystemLoad(input);
+
+                NaturalLanguageIntentParser.ParseResult parseResult =
                     NaturalLanguageIntentParser.parseWithConfidence(input);
-                Intent intent = result.intent;
+                IntentPipelineService.AnalysisResult analysis =
+                    pipelineService.analyzeIntent(userId, input, systemLoad);
 
-                // Generate SLA
-                SLANegotiationAgent slaAgent = new SLANegotiationAgent();
-                SLAContract sla = slaAgent.negotiate(intent);
+                Intent parsedIntent = analysis.parsedIntent();
+                Intent refinedIntent = analysis.refinedIntent();
+                SLAContract sla = analysis.slaContract();
 
-                // Evaluate trade-offs
-                CostPerformanceTradeoffEngine tradeoffEngine =
-                    new CostPerformanceTradeoffEngine();
-                double[] costs = {2.0, 5.0, 10.0, 15.0};
-                double[] latencies = {150.0, 80.0, 40.0, 20.0};
-                int bestOption = tradeoffEngine.findBestOption(costs, latencies, intent);
+                double observedCost = analysis.selectedCost() *
+                    (1.0 + Math.max(0.0, systemLoad - 0.65) * 0.20);
+                double observedLatency = analysis.selectedLatency() *
+                    (1.0 + systemLoad * 0.25);
+                boolean slaMet = observedCost <= sla.getMaxCostPerHour()
+                    && observedLatency <= sla.getMaxLatencyMs();
+                IntentPipelineService.FeedbackResult feedback =
+                    pipelineService.applyFeedback(userId, slaMet, observedCost, observedLatency);
 
                 // Update config with parsed intent
                 currentConfig.userIntent = input;
-                currentConfig.costPriority = intent.getCostPriority();
-                currentConfig.latencyPriority = intent.getLatencyPriority();
-                currentConfig.securityPriority = intent.getSecurityPriority();
-                currentConfig.carbonPriority = intent.getCarbonPriority();
+                currentConfig.intentValidated = true;
+                currentConfig.intentValidationMessage = "Intent accepted";
+                currentConfig.parserConfidence = parseResult.confidence;
+                currentConfig.dominantPriority = parseResult.dominantPriority;
+
+                currentConfig.systemLoad = systemLoad;
+                currentConfig.rlApplied = true;
+                currentConfig.rlReward = feedback.reward();
+
+                currentConfig.parsedCostPriority = parsedIntent.getCostPriority();
+                currentConfig.parsedLatencyPriority = parsedIntent.getLatencyPriority();
+                currentConfig.parsedSecurityPriority = parsedIntent.getSecurityPriority();
+                currentConfig.parsedCarbonPriority = parsedIntent.getCarbonPriority();
+
+                currentConfig.refinedCostPriority = refinedIntent.getCostPriority();
+                currentConfig.refinedLatencyPriority = refinedIntent.getLatencyPriority();
+                currentConfig.refinedSecurityPriority = refinedIntent.getSecurityPriority();
+                currentConfig.refinedCarbonPriority = refinedIntent.getCarbonPriority();
+
+                currentConfig.costPriority = refinedIntent.getCostPriority();
+                currentConfig.latencyPriority = refinedIntent.getLatencyPriority();
+                currentConfig.securityPriority = refinedIntent.getSecurityPriority();
+                currentConfig.carbonPriority = refinedIntent.getCarbonPriority();
                 
                 currentConfig.maxLatencyMs = sla.getMaxLatencyMs();
                 currentConfig.maxCostPerHour = sla.getMaxCostPerHour();
                 currentConfig.minAvailabilityPercent = sla.getMinAvailability();
                 currentConfig.securityLevel = sla.getMinSecurityLevel() > 5 ? "HIGH" : (sla.getMinSecurityLevel() > 2 ? "MEDIUM" : "LOW");
+                currentConfig.recommendedOptionIndex = analysis.bestOption();
+                currentConfig.candidateCosts = analysis.candidateCosts();
+                currentConfig.candidateLatencies = analysis.candidateLatencies();
+                currentConfig.selectedCostPerHour = analysis.selectedCost();
+                currentConfig.selectedLatencyMs = analysis.selectedLatency();
+                currentConfig.tradeoffScore = analysis.tradeoffScore();
+
+                double baselineLatency = analysis.baselineSelectedLatency();
+                double baselineCost = analysis.baselineSelectedCost();
+                double baselineScore = analysis.baselineTradeoffScore();
+
+                double latencyImprovement = improvementPercent(baselineLatency, analysis.selectedLatency());
+                double costImprovement = improvementPercent(baselineCost, analysis.selectedCost());
+                double scoreImprovement = improvementPercent(analysis.tradeoffScore(), baselineScore);
+
+                currentConfig.rlLatencyImprovementPercent = latencyImprovement;
+                currentConfig.rlCostImprovementPercent = costImprovement;
+                currentConfig.rlScoreImprovementPercent = scoreImprovement;
+
+                IntentPipelineService.LearningStats stats = feedback.learningStats();
+                currentConfig.rlRunCount = stats.runCount();
+                currentConfig.rlMaturityScore = stats.maturityScore();
+                currentConfig.rlHistoricalLatencyImprovementPercent = stats.avgLatencyImprovementPercent();
+                currentConfig.rlHistoricalCostImprovementPercent = stats.avgCostImprovementPercent();
+                currentConfig.rlHistoricalScoreImprovementPercent = stats.avgScoreImprovementPercent();
+                currentConfig.rlHistoricalAvgReward = stats.avgReward();
+                currentConfig.rlHistoricalRewardTrend = stats.rewardTrend();
+                currentConfig.rlHistoricalSlaSuccessRate = stats.slaSuccessRate();
 
                 // Prepare display
                 StringBuilder results = new StringBuilder();
@@ -185,54 +258,109 @@ public class IntentInputTab extends VBox {
                 results.append("║    PARSED INTENT ANALYSIS             ║\n");
                 results.append("╚════════════════════════════════════════╝\n\n");
                 results.append("Input: ").append(input).append("\n\n");
-                results.append("PRIORITY SCORES:\n");
-                results.append(String.format("  • Cost Priority:     %.1f%%\n", intent.getCostPriority() * 100));
-                results.append(String.format("  • Latency Priority:  %.1f%%\n", intent.getLatencyPriority() * 100));
-                results.append(String.format("  • Security Priority: %.1f%%\n", intent.getSecurityPriority() * 100));
-                results.append(String.format("  • Carbon Priority:   %.1f%%\n", intent.getCarbonPriority() * 100));
+                results.append("PARSED PRIORITY SCORES:\n");
+                results.append(String.format(Locale.ROOT, "  • Cost Priority:     %.1f%%\n", parsedIntent.getCostPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Latency Priority:  %.1f%%\n", parsedIntent.getLatencyPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Security Priority: %.1f%%\n", parsedIntent.getSecurityPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Carbon Priority:   %.1f%%\n\n", parsedIntent.getCarbonPriority() * 100));
+
+                results.append("RL-REFINED PRIORITY SCORES:\n");
+                results.append(String.format(Locale.ROOT, "  • Cost Priority:     %.1f%%\n", refinedIntent.getCostPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Latency Priority:  %.1f%%\n", refinedIntent.getLatencyPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Security Priority: %.1f%%\n", refinedIntent.getSecurityPriority() * 100));
+                results.append(String.format(Locale.ROOT, "  • Carbon Priority:   %.1f%%\n", refinedIntent.getCarbonPriority() * 100));
 
                 StringBuilder suggestions = new StringBuilder();
                 suggestions.append("╔════════════════════════════════════════╗\n");
                 suggestions.append("║    RECOMMENDED CONFIGURATION          ║\n");
                 suggestions.append("╚════════════════════════════════════════╝\n\n");
                 suggestions.append("NEGOTIATED SLA:\n");
-                suggestions.append(String.format("  • Max Latency:       %.0f ms\n", sla.getMaxLatencyMs()));
-                suggestions.append(String.format("  • Max Cost:          $%.2f/hour\n", sla.getMaxCostPerHour()));
-                suggestions.append(String.format("  • Min Availability:  %.1f%%\n", sla.getMinAvailability()));
-                suggestions.append(String.format("  • Security Level:    %.1f\n\n", sla.getMinSecurityLevel()));
+                suggestions.append(String.format(Locale.ROOT, "  • Max Latency:       %.0f ms\n", sla.getMaxLatencyMs()));
+                suggestions.append(String.format(Locale.ROOT, "  • Max Cost:          $%.2f/hour\n", sla.getMaxCostPerHour()));
+                suggestions.append(String.format(Locale.ROOT, "  • Min Availability:  %.1f%%\n", sla.getMinAvailability()));
+                suggestions.append(String.format(Locale.ROOT, "  • Security Level:    %.1f\n\n", sla.getMinSecurityLevel()));
 
                 suggestions.append("TRADE-OFF ANALYSIS:\n");
-                for (int i = 0; i < costs.length; i++) {
-                    String marker = (i == bestOption) ? " ⭐ RECOMMENDED" : "";
-                    suggestions.append(String.format("  Option %d: $%.1f/hr, %.0fms latency%s\n",
-                            i + 1, costs[i], latencies[i], marker));
+                for (int i = 0; i < analysis.candidateCosts().length; i++) {
+                    String marker = (i == analysis.bestOption()) ? " ⭐ RECOMMENDED" : "";
+                    suggestions.append(String.format(Locale.ROOT,
+                        "  Option %d: $%.2f/hr, %.1fms latency%s\n",
+                        i + 1,
+                        analysis.candidateCosts()[i],
+                        analysis.candidateLatencies()[i],
+                        marker));
                 }
 
+                suggestions.append(String.format(Locale.ROOT,
+                    "\nRL FEEDBACK:\n  • Observed Cost:      $%.2f/hr\n  • Observed Latency:   %.1f ms\n  • SLA Met:            %s\n  • Reward:             %.3f\n",
+                    observedCost, observedLatency, slaMet ? "YES" : "NO", feedback.reward()));
+
+                suggestions.append(String.format(Locale.ROOT,
+                    "\nRL VALUE ADD (vs parser-only baseline):\n"
+                        + "  • Baseline Best Option: Option %d ($%.2f/hr, %.1fms)\n"
+                        + "  • RL Best Option:       Option %d ($%.2f/hr, %.1fms)\n"
+                        + "  • Latency Improvement:  %.1f%%\n"
+                        + "  • Cost Improvement:     %.1f%%\n"
+                        + "  • Tradeoff Score Gain:  %.1f%%\n",
+                    analysis.baselineBestOption() + 1,
+                    baselineCost,
+                    baselineLatency,
+                    analysis.bestOption() + 1,
+                    analysis.selectedCost(),
+                    analysis.selectedLatency(),
+                    latencyImprovement,
+                    costImprovement,
+                    scoreImprovement));
+
+                suggestions.append(String.format(Locale.ROOT,
+                    "\nRL LEARNING MATURITY (data-driven):\n"
+                        + "  • Runs observed:        %d\n"
+                        + "  • Maturity:             %.0f%% (%s)\n"
+                        + "  • Avg Latency Gain:     %.1f%%\n"
+                        + "  • Avg Cost Gain:        %.1f%%\n"
+                        + "  • Avg Score Gain:       %.1f%%\n"
+                        + "  • SLA Success Rate:     %.1f%%\n"
+                        + "  • Reward Trend:         %.3f\n",
+                    stats.runCount(),
+                    stats.maturityScore() * 100.0,
+                    stats.mature() ? "mature" : "warming up",
+                    stats.avgLatencyImprovementPercent(),
+                    stats.avgCostImprovementPercent(),
+                    stats.avgScoreImprovementPercent(),
+                    stats.slaSuccessRate() * 100.0,
+                    stats.rewardTrend()));
+
                 suggestions.append("\nPLACEMENT STRATEGY:\n");
-                if (intent.getCostPriority() > 0.7) {
+                if (refinedIntent.getCostPriority() > 0.7) {
                     suggestions.append("  • Consolidate VMs on fewer hosts\n");
                     suggestions.append("  • Use shared infrastructure\n");
                     currentConfig.vmPlacementPolicy = "CONSOLIDATED";
-                } else if (intent.getLatencyPriority() > 0.7) {
+                } else if (refinedIntent.getLatencyPriority() > 0.7) {
                     suggestions.append("  • Spread VMs across multiple hosts\n");
                     suggestions.append("  • Use high-performance hosts\n");
                     currentConfig.vmPlacementPolicy = "SPREAD";
-                } else if (intent.getSecurityPriority() > 0.7) {
+                } else if (refinedIntent.getSecurityPriority() > 0.7) {
                     suggestions.append("  • Use isolated/dedicated hosts\n");
                     suggestions.append("  • Enable encryption on all VMs\n");
                     currentConfig.vmPlacementPolicy = "ISOLATED";
+                } else {
+                    suggestions.append("  • Balanced placement to optimize mixed priorities\n");
+                    currentConfig.vmPlacementPolicy = "SPREAD";
                 }
 
-                if (intent.getCarbonPriority() > 0.5) {
+                if (refinedIntent.getCarbonPriority() > 0.5) {
                     suggestions.append("  • Use green/renewable energy datacenters\n");
                     currentConfig.greenDatacenter = true;
+                } else {
+                    currentConfig.greenDatacenter = false;
                 }
 
                 Platform.runLater(() -> {
                     resultArea.setText(results.toString());
                     suggestionsArea.setText(suggestions.toString());
-                    confidenceLabel.setText(String.format("Confidence: %.0f%%", result.confidence * 100));
-                    dominantLabel.setText("Dominant: " + result.dominantPriority);
+                    confidenceLabel.setText(String.format(Locale.ROOT,
+                        "Confidence: %.0f%%", parseResult.confidence * 100));
+                    dominantLabel.setText("Dominant: " + parseResult.dominantPriority + " | RL: enabled");
                 });
 
             } catch (Exception e) {
@@ -244,6 +372,39 @@ public class IntentInputTab extends VBox {
         });
         thread.setDaemon(true);
         thread.start();
+    }
+
+    private boolean isIntentDetailedEnough(String input) {
+        String normalized = input.toLowerCase(Locale.ROOT).trim();
+        if (normalized.length() < 18) return false;
+
+        String[] words = normalized.split("\\s+");
+        int meaningful = 0;
+        for (String word : words) {
+            if (word.matches("[a-zA-Z]{3,}")) {
+                meaningful++;
+            }
+        }
+
+        boolean hasSignalWord = normalized.contains("cost") || normalized.contains("budget")
+            || normalized.contains("latency") || normalized.contains("fast")
+            || normalized.contains("security") || normalized.contains("secure")
+            || normalized.contains("green") || normalized.contains("sustainable")
+            || normalized.contains("compliance") || normalized.contains("availability");
+
+        return meaningful >= 5 && hasSignalWord;
+    }
+
+    private double deriveSystemLoad(String input) {
+        int words = input.trim().split("\\s+").length;
+        double lexicalFactor = Math.min(0.55, words * 0.03);
+        double complexityFactor = input.contains(",") || input.contains("and") ? 0.10 : 0.05;
+        return Math.max(0.25, Math.min(0.95, 0.30 + lexicalFactor + complexityFactor));
+    }
+
+    private double improvementPercent(double baseline, double candidate) {
+        if (baseline <= 0.0) return 0.0;
+        return ((baseline - candidate) / baseline) * 100.0;
     }
 
     /**

@@ -46,6 +46,8 @@ public class ReinforcementIntentRefiner {
     private final double alpha;
     private final double gamma;
     private final double epsilon;
+    private final double minEpsilon;
+    private int feedbackCount;
 
     public ReinforcementIntentRefiner() {
         this(0.20, 0.85, 0.15, 42L);
@@ -56,7 +58,17 @@ public class ReinforcementIntentRefiner {
         this.alpha = alpha;
         this.gamma = gamma;
         this.epsilon = epsilon;
+        this.minEpsilon = 0.02;
+        this.feedbackCount = 0;
         this.random = new Random(seed);
+    }
+
+    /**
+     * Warm-starts the refiner with prior feedback count so epsilon decay
+     * continues across application restarts.
+     */
+    public void warmStart(int priorFeedbackCount) {
+        this.feedbackCount = Math.max(0, priorFeedbackCount);
     }
 
     /**
@@ -109,6 +121,8 @@ public class ReinforcementIntentRefiner {
         qValues[actionIndex] = currentQ +
             alpha * (reward + gamma * maxNext - currentQ);
 
+        feedbackCount++;
+
         System.out.printf(Locale.ROOT,
             "[RLRefiner] feedback user=%s reward=%.3f updatedQ=%.3f%n",
             userId, reward, qValues[actionIndex]);
@@ -133,9 +147,14 @@ public class ReinforcementIntentRefiner {
     }
 
     private Action chooseAction(String stateKey) {
-        if (random.nextDouble() < epsilon) {
+        double adaptiveEpsilon = Math.max(minEpsilon,
+            epsilon * Math.exp(-feedbackCount / 40.0));
+
+        if (random.nextDouble() < adaptiveEpsilon) {
             Action randomAction = Action.values()[random.nextInt(Action.values().length)];
-            System.out.println("[RLRefiner] Exploration -> " + randomAction);
+            System.out.printf(Locale.ROOT,
+                "[RLRefiner] Exploration(epsilon=%.3f) -> %s%n",
+                adaptiveEpsilon, randomAction);
             return randomAction;
         }
 

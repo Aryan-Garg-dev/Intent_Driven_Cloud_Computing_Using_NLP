@@ -175,8 +175,8 @@ public class IntentInputTab extends VBox {
                 String userId = currentConfig.userId != null ? currentConfig.userId : "user_default";
                 double systemLoad = deriveSystemLoad(input);
 
-                NaturalLanguageIntentParser.ParseResult parseResult =
-                    NaturalLanguageIntentParser.parseWithConfidence(input);
+                NaturalLanguageIntentParser.ParseDiagnostics parseDiagnostics =
+                    NaturalLanguageIntentParser.parseWithDiagnostics(input);
                 IntentPipelineService.AnalysisResult analysis =
                     pipelineService.analyzeIntent(userId, input, systemLoad);
 
@@ -197,8 +197,8 @@ public class IntentInputTab extends VBox {
                 currentConfig.userIntent = input;
                 currentConfig.intentValidated = true;
                 currentConfig.intentValidationMessage = "Intent accepted";
-                currentConfig.parserConfidence = parseResult.confidence;
-                currentConfig.dominantPriority = parseResult.dominantPriority;
+                currentConfig.parserConfidence = parseDiagnostics.confidence();
+                currentConfig.dominantPriority = parseDiagnostics.dominantPriority();
 
                 currentConfig.systemLoad = systemLoad;
                 currentConfig.rlApplied = true;
@@ -229,6 +229,8 @@ public class IntentInputTab extends VBox {
                 currentConfig.selectedCostPerHour = analysis.selectedCost();
                 currentConfig.selectedLatencyMs = analysis.selectedLatency();
                 currentConfig.tradeoffScore = analysis.tradeoffScore();
+
+                applyDynamicProvisioning(currentConfig, refinedIntent, sla, analysis, systemLoad, input);
 
                 double baselineLatency = analysis.baselineSelectedLatency();
                 double baselineCost = analysis.baselineSelectedCost();
@@ -269,6 +271,17 @@ public class IntentInputTab extends VBox {
                 results.append(String.format(Locale.ROOT, "  • Latency Priority:  %.1f%%\n", refinedIntent.getLatencyPriority() * 100));
                 results.append(String.format(Locale.ROOT, "  • Security Priority: %.1f%%\n", refinedIntent.getSecurityPriority() * 100));
                 results.append(String.format(Locale.ROOT, "  • Carbon Priority:   %.1f%%\n", refinedIntent.getCarbonPriority() * 100));
+
+                results.append("\nPARSER CONFIDENCE BREAKDOWN:\n");
+                appendDimensionConfidence(results, "Cost", parseDiagnostics.dimensions().get("cost"));
+                appendDimensionConfidence(results, "Latency", parseDiagnostics.dimensions().get("latency"));
+                appendDimensionConfidence(results, "Security", parseDiagnostics.dimensions().get("security"));
+                appendDimensionConfidence(results, "Carbon", parseDiagnostics.dimensions().get("carbon"));
+                if (!parseDiagnostics.matchedDomains().isEmpty()) {
+                    results.append("  • Domain Context:    ")
+                        .append(String.join(", ", parseDiagnostics.matchedDomains()))
+                        .append("\n");
+                }
 
                 StringBuilder suggestions = new StringBuilder();
                 suggestions.append("╔════════════════════════════════════════╗\n");
@@ -355,12 +368,28 @@ public class IntentInputTab extends VBox {
                     currentConfig.greenDatacenter = false;
                 }
 
+                suggestions.append("\nPROVISIONED INFRASTRUCTURE (intent-derived):\n");
+                suggestions.append(String.format(Locale.ROOT,
+                    "  • Hosts:              %d (each: %d cores, %d GB RAM, %d GB storage)\n",
+                    currentConfig.numHosts,
+                    currentConfig.hostCores,
+                    currentConfig.hostRamGb,
+                    currentConfig.hostStorageGb));
+                suggestions.append(String.format(Locale.ROOT,
+                    "  • VMs:                %d (each: %d cores, %d GB RAM)\n",
+                    currentConfig.numVMs,
+                    currentConfig.vmCores,
+                    currentConfig.vmRamGb));
+                suggestions.append(String.format(Locale.ROOT,
+                    "  • Cloudlets:          %d\n",
+                    currentConfig.numCloudlets));
+
                 Platform.runLater(() -> {
                     resultArea.setText(results.toString());
                     suggestionsArea.setText(suggestions.toString());
                     confidenceLabel.setText(String.format(Locale.ROOT,
-                        "Confidence: %.0f%%", parseResult.confidence * 100));
-                    dominantLabel.setText("Dominant: " + parseResult.dominantPriority + " | RL: enabled");
+                        "Confidence: %.0f%%", parseDiagnostics.confidence() * 100));
+                    dominantLabel.setText("Dominant: " + parseDiagnostics.dominantPriority() + " | RL: enabled");
                 });
 
             } catch (Exception e) {
@@ -405,6 +434,89 @@ public class IntentInputTab extends VBox {
     private double improvementPercent(double baseline, double candidate) {
         if (baseline <= 0.0) return 0.0;
         return ((baseline - candidate) / baseline) * 100.0;
+    }
+
+    private void applyDynamicProvisioning(CloudConfig config,
+                                          Intent refinedIntent,
+                                          SLAContract sla,
+                                          IntentPipelineService.AnalysisResult analysis,
+                                          double systemLoad,
+                                          String input) {
+        int bestTier = Math.max(0, Math.min(3, analysis.bestOption()));
+        int wordCount = input == null ? 0 : input.trim().split("\\s+").length;
+
+        double perfSignal = refinedIntent.getLatencyPriority();
+        double securitySignal = refinedIntent.getSecurityPriority();
+        double costSignal = refinedIntent.getCostPriority();
+        double carbonSignal = refinedIntent.getCarbonPriority();
+
+        int hostBase = 3 + bestTier;
+        int perfScale = (int) Math.round(perfSignal * 4.0);
+        int securityScale = (int) Math.round(securitySignal * 2.0);
+        int loadScale = (int) Math.round(systemLoad * 3.0);
+        int costReduction = (int) Math.round(costSignal * 3.0);
+
+        int hosts = clampInt(2, 14, hostBase + perfScale + securityScale + loadScale - costReduction);
+
+        int hostCores = 8 + (bestTier * 2) + (int) Math.round(perfSignal * 6.0);
+        if (sla.getMaxLatencyMs() <= 80.0) {
+            hostCores += 2;
+        }
+        hostCores = clampInt(8, 32, hostCores);
+
+        long hostRamGb = 16L + (bestTier * 8L) + Math.round(perfSignal * 24.0);
+        hostRamGb = clampLong(16L, 128L, hostRamGb);
+
+        long hostStorageGb = 800L + (bestTier * 400L) + Math.round((1.0 - carbonSignal) * 300.0);
+        hostStorageGb = clampLong(800L, 4800L, hostStorageGb);
+
+        int vmDensity = clampInt(1, 4, 1 + bestTier + (int) Math.round((1.0 - securitySignal) * 1.5));
+        int numVMs = clampInt(2, hosts * 4, hosts * vmDensity);
+
+        int vmCores = clampInt(2, 8, 2 + bestTier + (perfSignal > 0.7 ? 1 : 0));
+        long vmRamGb = clampLong(4L, 24L, 4L + (bestTier * 2L) + Math.round(securitySignal * 4.0));
+
+        int cloudlets = clampInt(8, 300, (int) Math.round(numVMs * (1.8 + systemLoad * 1.6 + (wordCount / 40.0))));
+        if (perfSignal > 0.8 && sla.getMaxLatencyMs() < 70.0) {
+            cloudlets = clampInt(8, 300, cloudlets + 12);
+        }
+
+        config.numHosts = hosts;
+        config.hostCores = hostCores;
+        config.hostRamGb = hostRamGb;
+        config.hostStorageGb = hostStorageGb;
+
+        config.numVMs = numVMs;
+        config.vmCores = vmCores;
+        config.vmRamGb = vmRamGb;
+
+        config.hostsPerDatacenter = hosts;
+        config.vmsPerHost = Math.max(1, Math.round((float) numVMs / (float) hosts));
+        config.numCloudlets = cloudlets;
+        config.cloudletsPerVM = Math.max(1, Math.round((float) cloudlets / (float) numVMs));
+    }
+
+    private int clampInt(int min, int max, int value) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private long clampLong(long min, long max, long value) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private void appendDimensionConfidence(StringBuilder results,
+                                           String label,
+                                           NaturalLanguageIntentParser.DimensionConfidence confidence) {
+        if (confidence == null) return;
+        results.append(String.format(Locale.ROOT,
+            "  • %-11s keyword=%.2f semantic=%.2f fused=%.2f final=%.2f%s\n",
+            label + ":",
+            confidence.keywordScore(),
+            confidence.semanticScore(),
+            confidence.fusedScore(),
+            confidence.finalScore(),
+            confidence.negated() ? " (negated)" : ""
+        ));
     }
 
     /**

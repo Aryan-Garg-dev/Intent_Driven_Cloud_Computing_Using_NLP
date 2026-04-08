@@ -36,4 +36,31 @@ public class NaturalLanguageIntentParserTest {
         Assert.assertTrue("Latency should be downweighted by explicit negation",
             intent.getLatencyPriority() <= 0.30);
     }
+
+    @Test
+    public void parse_shouldRaiseSecurity_whenPromptSaysVeryHighSecurity() {
+        Intent intent = NaturalLanguageIntentParser.parse(
+            "i need the fastest server for my gaming server with very high security i do not care about cost"
+        );
+
+        Assert.assertTrue("Security should be materially represented for 'very high security'",
+            intent.getSecurityPriority() >= 0.20);
+        Assert.assertTrue("Cost should stay low due to explicit cost negation",
+            intent.getCostPriority() <= 0.20);
+    }
+
+    @Test
+    public void diagnostics_shouldExposeDomainContextAndDimensionBreakdown() {
+        NaturalLanguageIntentParser.ParseDiagnostics diagnostics =
+            NaturalLanguageIntentParser.parseWithDiagnostics(
+                "Need multiplayer gaming servers with low lag, high fps and strong ddos protection"
+            );
+
+        Assert.assertTrue("Gaming domain should be detected",
+            diagnostics.matchedDomains().contains("gaming"));
+        Assert.assertNotNull("Latency breakdown should be present",
+            diagnostics.dimensions().get("latency"));
+        Assert.assertTrue("Latency semantic signal should be meaningful",
+            diagnostics.dimensions().get("latency").semanticScore() >= 0.60);
+    }
 }

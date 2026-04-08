@@ -22,6 +22,22 @@ import java.util.regex.Pattern;
  */
 public class NaturalLanguageIntentParser {
 
+    public record DimensionConfidence(
+        double keywordScore,
+        double semanticScore,
+        double fusedScore,
+        boolean negated,
+        double finalScore
+    ) {}
+
+    public record ParseDiagnostics(
+        Intent intent,
+        double confidence,
+        String dominantPriority,
+        List<String> matchedDomains,
+        Map<String, DimensionConfidence> dimensions
+    ) {}
+
     private static final SemanticIntentMapper SEMANTIC_MAPPER =
         new SemanticIntentMapper();
 
@@ -86,7 +102,10 @@ public class NaturalLanguageIntentParser {
         LATENCY_KEYWORDS.put("optimized", 0.8);
 
         // Security-related keywords
+    SECURITY_KEYWORDS.put("security", 0.9);
         SECURITY_KEYWORDS.put("secure", 0.9);
+    SECURITY_KEYWORDS.put("high security", 0.95);
+    SECURITY_KEYWORDS.put("very high security", 1.0);
         SECURITY_KEYWORDS.put("encrypted", 0.85);
         SECURITY_KEYWORDS.put("private", 0.8);
         SECURITY_KEYWORDS.put("confidential", 0.85);
@@ -116,7 +135,9 @@ public class NaturalLanguageIntentParser {
 
         // Intensity modifiers
         INTENSITY_MODIFIERS.put("very", 1.1);
+    INTENSITY_MODIFIERS.put("high", 1.08);
         INTENSITY_MODIFIERS.put("extremely", 1.2);
+    INTENSITY_MODIFIERS.put("highest", 1.2);
         INTENSITY_MODIFIERS.put("highly", 1.1);
         INTENSITY_MODIFIERS.put("super", 1.15);
         INTENSITY_MODIFIERS.put("ultra", 1.2);
@@ -334,6 +355,71 @@ public class NaturalLanguageIntentParser {
         sb.append("Carbon Priority: ").append(
             String.format("%.0f%%", intent.getCarbonPriority() * 100)).append("\n");
         return sb.toString();
+    }
+
+    public static ParseDiagnostics parseWithDiagnostics(String input) {
+        if (input == null || input.trim().isEmpty()) {
+            Intent fallback = new Intent();
+            Map<String, DimensionConfidence> defaultBreakdown = new LinkedHashMap<>();
+            defaultBreakdown.put("cost", new DimensionConfidence(0.0, 0.0, 0.0, false, fallback.getCostPriority()));
+            defaultBreakdown.put("latency", new DimensionConfidence(0.0, 0.0, 0.0, false, fallback.getLatencyPriority()));
+            defaultBreakdown.put("security", new DimensionConfidence(0.0, 0.0, 0.0, false, fallback.getSecurityPriority()));
+            defaultBreakdown.put("carbon", new DimensionConfidence(0.0, 0.0, 0.0, false, fallback.getCarbonPriority()));
+            return new ParseDiagnostics(fallback, 0.0, extractDominantPriority(fallback), List.of(), defaultBreakdown);
+        }
+
+        String lowerInput = input.toLowerCase(Locale.ROOT).trim();
+
+        double keywordCost = calculateScore(lowerInput, COST_KEYWORDS);
+        double keywordLatency = calculateScore(lowerInput, LATENCY_KEYWORDS);
+        double keywordSecurity = calculateScore(lowerInput, SECURITY_KEYWORDS);
+        double keywordCarbon = calculateScore(lowerInput, CARBON_KEYWORDS);
+
+        Map<String, Double> semanticScores = SEMANTIC_MAPPER.extractScores(lowerInput);
+        SemanticIntentMapper.DomainContext domainContext = SEMANTIC_MAPPER.analyzeDomainContext(lowerInput);
+
+        double fusedCost = combine(keywordCost, semanticScores.getOrDefault("cost", 0.0));
+        double fusedLatency = combine(keywordLatency, semanticScores.getOrDefault("latency", 0.0));
+        double fusedSecurity = combine(keywordSecurity, semanticScores.getOrDefault("security", 0.0));
+        double fusedCarbon = combine(keywordCarbon, semanticScores.getOrDefault("carbon", 0.0));
+
+        boolean negCost = isCategoryNegated(lowerInput, COST_TERMS);
+        boolean negLatency = isCategoryNegated(lowerInput, LATENCY_TERMS);
+        boolean negSecurity = isCategoryNegated(lowerInput, SECURITY_TERMS);
+        boolean negCarbon = isCategoryNegated(lowerInput, CARBON_TERMS);
+
+        double finalCost = applyNegation(lowerInput, fusedCost, COST_TERMS);
+        double finalLatency = applyNegation(lowerInput, fusedLatency, LATENCY_TERMS);
+        double finalSecurity = applyNegation(lowerInput, fusedSecurity, SECURITY_TERMS);
+        double finalCarbon = applyNegation(lowerInput, fusedCarbon, CARBON_TERMS);
+
+        double[] normalized = normalizeScores(finalCost, finalLatency, finalSecurity, finalCarbon);
+        finalCost = normalized[0];
+        finalLatency = normalized[1];
+        finalSecurity = normalized[2];
+        finalCarbon = normalized[3];
+
+        if (finalCost == 0 && finalLatency == 0 && finalSecurity == 0 && finalCarbon == 0) {
+            finalCost = 0.5;
+            finalLatency = 0.5;
+            finalSecurity = 0.3;
+            finalCarbon = 0.2;
+        }
+
+        Intent intent = new Intent(finalCost, finalLatency, finalSecurity, finalCarbon);
+        Map<String, DimensionConfidence> breakdown = new LinkedHashMap<>();
+        breakdown.put("cost", new DimensionConfidence(keywordCost, semanticScores.getOrDefault("cost", 0.0), fusedCost, negCost, finalCost));
+        breakdown.put("latency", new DimensionConfidence(keywordLatency, semanticScores.getOrDefault("latency", 0.0), fusedLatency, negLatency, finalLatency));
+        breakdown.put("security", new DimensionConfidence(keywordSecurity, semanticScores.getOrDefault("security", 0.0), fusedSecurity, negSecurity, finalSecurity));
+        breakdown.put("carbon", new DimensionConfidence(keywordCarbon, semanticScores.getOrDefault("carbon", 0.0), fusedCarbon, negCarbon, finalCarbon));
+
+        return new ParseDiagnostics(
+            intent,
+            calculateConfidence(input),
+            extractDominantPriority(intent),
+            domainContext.matchedDomains(),
+            breakdown
+        );
     }
 
     /**
